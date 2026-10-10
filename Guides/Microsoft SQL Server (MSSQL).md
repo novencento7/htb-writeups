@@ -558,3 +558,230 @@ Check the client and server encryption configuration, certificate validity, cert
 Do not resolve certificate problems by disabling validation in production.
 
 ### Service Not Running on
+
+---
+
+## Interpreting MSSQL Nmap Script Scan Results
+
+During a penetration test, running Nmap's MSSQL NSE scripts can help identify the SQL Server version, discover the underlying Windows host, test authentication, and determine which database operations may be accessible.
+
+The following scan was performed against an authorized Hack The Box lab target.
+
+### MSSQL Enumeration Command
+
+```bash
+sudo nmap --script ms-sql-info,ms-sql-empty-password,ms-sql-xp-cmdshell,ms-sql-config,ms-sql-ntlm-info,ms-sql-tables,ms-sql-hasdbaccess,ms-sql-dac,ms-sql-dump-hashes \
+--script-args mssql.instance-port=1433,mssql.username=sa,mssql.password=,mssql.instance-name=MSSQLSERVER \
+-sV -p 1433 10.129.244.239
+```
+
+#### Understanding the Command
+
+- `sudo nmap`: runs Nmap with elevated privileges.
+- `--script`: specifies the NSE scripts to execute.
+- `--script-args`: supplies arguments used by the MSSQL scripts.
+- `mssql.instance-port=1433`: specifies the SQL Server TCP port.
+- `mssql.username=sa`: specifies the SQL Server login to test.
+- `mssql.password=`: supplies an empty password.
+- `mssql.instance-name=MSSQLSERVER`: specifies the default instance name.
+- `-sV`: attempts to identify the service and its version.
+- `-p 1433`: scans TCP port 1433 on the target.
+
+**Important:** This command tests the `sa` account with an empty password. It does not establish that the account is disabled, that every authentication method fails, or that the server is otherwise inaccessible.
+
+### 1. Identify the SQL Server Version
+
+The scan returned:
+
+```text
+PORT     STATE SERVICE  VERSION
+1433/tcp open  ms-sql-s Microsoft SQL Server 2019 15.00.2000.00; RTM
+```
+
+This confirms that TCP port 1433 is open and the service has been identified as Microsoft SQL Server 2019.
+
+The version number `15.00.2000.00` corresponds to the SQL Server 2019 RTM release.
+
+This information is useful for documenting the target and investigating whether applicable security updates are missing. The version alone does not prove that the server is vulnerable.
+
+### 2. Identify the Underlying Windows Host
+
+The `ms-sql-ntlm-info` script returned:
+
+```text
+Target_Name: ILF-SQL-01
+NetBIOS_Domain_Name: ILF-SQL-01
+NetBIOS_Computer_Name: ILF-SQL-01
+DNS_Domain_Name: ILF-SQL-01
+DNS_Computer_Name: ILF-SQL-01
+Product_Version: 10.0.17763
+```
+
+The results reveal the hostname `ILF-SQL-01`.
+
+The Windows build number `10.0.17763` is associated with the Windows Server 2019 generation.
+
+During an assessment, record this information because hostnames can help correlate findings from other services, such as SMB, LDAP, DNS, and RDP.
+
+The returned domain-related fields do not necessarily prove that the host belongs to an Active Directory domain. Further enumeration is needed to establish the actual environment.
+
+### 3. Understand the MSSQL Instance Information
+
+The `ms-sql-info` script returned:
+
+```text
+Instance name: MSSQLSERVER
+Version:
+  name: Microsoft SQL Server 2019 RTM
+  number: 15.00.2000.00
+TCP port: 1433
+Named pipe: \\10.129.244.239\pipe\sql\query
+Clustered: false
+```
+
+The relevant fields are:
+
+- **Instance name:** `MSSQLSERVER`, the conventional name of the default SQL Server instance.
+- **TCP port:** `1433`, the port used by the instance.
+- **Named pipe:** an alternative communication mechanism, if enabled and accessible.
+- **Clustered:** `false`, indicating that the instance was not identified as clustered by this scan.
+
+The named-pipe information does not, by itself, prove that remote named-pipe connections are accessible.
+
+### 4. Check for an Empty Password
+
+The scan included the `ms-sql-empty-password` script and supplied the `sa` username with an empty password.
+
+The relevant output was:
+
+```text
+ms-sql-empty-password:
+|_  10.129.244.239\MSSQLSERVER:
+```
+
+The output does not explicitly report a successful login. Therefore, it should not be interpreted as definitive proof that the empty password worked.
+
+To verify the result, attempt a connection using an appropriate MSSQL client and inspect the authentication response.
+
+### 5. Understand Authentication Errors
+
+The `ms-sql-config` script returned:
+
+```text
+ERROR: Bad username or password
+```
+
+The `ms-sql-dump-hashes` script returned a similar error.
+
+These messages indicate that the scripts could not authenticate using the supplied credentials.
+
+They do not establish that all accounts are inaccessible or that the server cannot be reached using Windows Authentication or another valid SQL login.
+
+SQL Server supports different authentication mechanisms, including:
+
+- **Windows Authentication:** authentication through Windows security.
+- **SQL Server Authentication:** authentication using SQL Server-managed logins, such as `sa`.
+
+The appropriate authentication method depends on the target's configuration and the credentials available.
+
+### 6. Understand the `xp_cmdshell` Script
+
+The `ms-sql-xp-cmdshell` script returned:
+
+```text
+(Use --script-args=ms-sql-xp-cmdshell.cmd='<CMD>' to change command.)
+```
+
+This message describes an available script argument. It does not confirm that `xp_cmdshell` is enabled or that operating-system commands can be executed.
+
+`xp_cmdshell` is an extended stored procedure that can execute operating-system commands through SQL Server when enabled and when the login has sufficient permissions.
+
+Its availability and permissions are important security considerations because excessive privileges may allow database access to become a route toward the underlying operating system.
+
+### 7. Understand the DAC Result
+
+The `ms-sql-dac` script returned:
+
+```text
+port: 1434
+state: closed
+error: ERROR
+```
+
+The Dedicated Administrator Connection (DAC) provides a special administrative connection for troubleshooting SQL Server.
+
+The reported failure means the script could not establish the attempted DAC connection. It does not establish that every administrative connection is unavailable.
+
+Do not confuse the DAC with the SQL Server Browser service, which commonly uses UDP port 1434 to provide information about SQL Server instances.
+
+### 8. Understand Table Enumeration Errors
+
+The `ms-sql-tables` script returned:
+
+```text
+ERROR: Script execution failed (use -d to debug)
+```
+
+The `ms-sql-hasdbaccess` script also reported:
+
+```text
+Bug in ms-sql-hasdbaccess: no string output.
+```
+
+These messages do not conclusively establish whether the login has database access.
+
+Possible explanations include authentication problems, insufficient permissions, script limitations, or execution errors. Additional testing with a valid SQL connection is required to determine the actual cause.
+
+### 9. Connect to MSSQL Using Impacket
+
+If valid credentials are available, Impacket's `mssqlclient.py` can be used to connect to the SQL Server instance.
+
+For SQL Server Authentication:
+
+```bash
+impacket-mssqlclient sa@10.129.244.239
+```
+
+Enter the password when prompted. To test an empty password, submit an empty response.
+
+For Windows Authentication, use the appropriate Windows account and the `-windows-auth` option:
+
+```bash
+impacket-mssqlclient DOMAIN/username@10.129.244.239 -windows-auth
+```
+
+Replace the example domain and username with authorized credentials.
+
+If authentication succeeds, the client provides an interactive SQL prompt. You can begin by enumerating the databases available to the current login.
+
+```sql
+SELECT name FROM sys.databases;
+```
+
+The returned databases depend on the login's permissions and SQL Server's metadata visibility rules.
+
+### 10. Troubleshooting Checklist
+
+When an MSSQL enumeration scan produces errors, use the following checklist:
+
+1. **Verify connectivity:** confirm that TCP port 1433 is reachable.
+2. **Verify the credentials:** distinguish a failed login from a network or service error.
+3. **Check the authentication method:** determine whether the target expects SQL Server Authentication or Windows Authentication.
+4. **Check permissions:** successful authentication does not imply administrative privileges.
+5. **Inspect individual NSE scripts:** run selected scripts separately to isolate errors.
+6. **Use client-side verification:** confirm important findings with an MSSQL client rather than relying on ambiguous script output.
+7. **Record the evidence:** document the hostname, SQL Server version, instance name, open port, authentication results, and any limitations.
+
+### Key Takeaways
+
+| Finding | Interpretation |
+|---|---|
+| `1433/tcp open` | SQL Server is reachable on the scanned TCP port. |
+| `Microsoft SQL Server 2019 RTM` | The service identifies itself as SQL Server 2019 RTM. |
+| `ILF-SQL-01` | Hostname information was disclosed through NTLM-related enumeration. |
+| `Bad username or password` | The supplied credentials did not authenticate in that script's attempt. |
+| `xp_cmdshell` usage message | Not proof that command execution is enabled. |
+| `ms-sql-tables` execution failure | The table enumeration attempt failed; the underlying cause remains unconfirmed. |
+
+The most important principle is to distinguish **service discovery, authentication, authorization, and command execution**. An open SQL Server port proves network reachability, not database access or administrative control.
+
